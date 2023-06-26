@@ -1,0 +1,322 @@
+---
+title: "RPCs_T1_T2_T3_final - to use"
+output:
+  html_document:
+    df_print: paged
+---
+```{r}
+knitr::opts_chunk$set(echo=FALSE, warning=FALSE, message=FALSE)
+```
+
+```{r libaries}
+library(dplyr)
+library(Seurat)
+library("ggplot2")
+library(monocle3)
+library(patchwork)
+library(SeuratWrappers)
+library(harmony)
+library(ggplotify)
+library(PNWColors)
+library(pheatmap)
+library(viridis)
+
+
+seuratObj <- readRDS("../rObjects/seurat_clusters_and_pluripotent_removed.rds")
+subsets <- readRDS("../rObjects/pseudotime_subsets.rds")
+
+
+outName <- "RPCs_T1_T2_T3_October"
+seuratObj_subset_part1 <- readRDS(paste0("../rObjects/seurat_subset_part1", outName, ".rds"))
+
+cds_selected <- readRDS(paste0("../rObjects/cds_", outName, ".rds"))
+
+# seuratObj_subset <- readRDS(paste0("rObjects/seurat_subset_part2", outName2, ".rds"))
+# cds_subset_cc <- readRDS(paste0("rObjects/cds_", outName2, ".rds"))
+subsets <- readRDS("../rObjects/pseudotime_subsets.rds")
+#startingNode <- read.csv("StartNode/startingNodes", row.names = 1)[outName,]
+
+clusters_to_remove <- readRDS("../rObjects/clutsters_to_remove.rds")[[outName]]
+
+seuratObj_selected <- readRDS(paste0("../rObjects/"," seurat_subset_clusters_removed", outName, ".rds"))
+colours <-  read.csv("/data/rachel/Linda_Lako/Retina/HighResFigures/colours_birthe.csv")
+
+```
+
+```{r}
+## functions
+
+sobjToCds <- function(sObj){
+  harmonyLoadings <- sObj@reductions[["harmony"]]@feature.loadings.projected
+  sObj <- DietSeurat(sObj, graphs = "umap")
+  cds <- as.cell_data_set(sObj)
+  cds <- cluster_cells(cds, reduction_method = "UMAP", k = 15)
+  cds <- learn_graph(cds, use_partition = FALSE)
+  ## Add gene names into CDS
+  rowData(cds)$gene_name <- rownames(cds)
+  rowData(cds)$gene_short_name <- rowData(cds)$gene_name
+  ## estimate size factors
+  cds <- estimate_size_factors(
+  cds,
+  round_exprs = TRUE,
+  method = c("mean-geometric-mean-total", "mean-geometric-mean-log-total")
+)
+  # add harmony reduction
+  cds@preprocess_aux$gene_loadings <- harmonyLoadings
+  
+  
+return(cds)
+}
+
+
+pt_heatmap <- function(seuratObj_subset, cds_subset_cc, scenario) {
+  seuratObj_subset <- SetIdent(seuratObj_subset, value = "CellType")
+  cellTypes <- seuratObj_subset$CellType %>% unique()
+
+
+cellTypeOrder <- read.csv("../annotations/cellTypeOrder.csv", 
+                          header = FALSE, 
+                          stringsAsFactors = FALSE)$V1 
+
+clusterOrder <- unique(cellTypeOrder[cellTypeOrder %in% cellTypes])
+seuratObj_subset$CellType2 <- seuratObj_subset$CellType %>% factor(levels = clusterOrder)
+
+
+seuratObj_subset$pseudotime <- pseudotime(cds_subset_cc)
+cellOrder <- order(seuratObj_subset$CellType2, rev(seuratObj_subset$pseudotime))
+
+## colours for legend
+pal <- pnw_palette("Bay",length(clusterOrder),type="continuous")[1:length(clusterOrder)]
+names(pal) <- clusterOrder
+annotation_colors <- list(CellType = pal)
+
+
+fName <- paste0("celltype_markers/", outName, "scenario", "_", scenario, "_celltype_markers.csv")
+markers <- read.csv(fName, row.names = 1)
+markers$cluster <- markers$cluster %>%  factor(levels = clusterOrder )
+
+
+
+
+top10 <- markers %>% 
+  filter(avg_log2FC > 0) %>% 
+  arrange(cluster) %>% 
+  group_by(cluster) %>% 
+  top_n(n = 10, wt = avg_log2FC) 
+
+#top10 <- top10[c(-1,-2,-3),]
+
+genesUse <- top10 %>% pull(gene) %>% unique()
+
+
+md <- seuratObj_subset[[]][cellOrder,c("CellType", "pseudotime", "day")]
+breaksList = seq(0, 3, by = .2)
+
+
+exp <- seuratObj_subset@assays$RNA@data[genesUse, cellOrder]
+
+p_heatmap1 <- as.ggplot(pheatmap(exp, 
+         cluster_rows = FALSE, 
+         cluster_cols = FALSE, 
+         show_colnames = FALSE, 
+         annotation_col = md, 
+         color = viridis(15), 
+         annotation_colors = annotation_colors,
+         scale = "row", 
+         breaks = breaksList
+          ))
+
+
+}
+
+```
+
+# {.tabset .tabset-pills}
+
+## Clusters used
+
+
+```{r}
+clustersUse <- subsets[[outName]]
+
+## subset_trajectory.R
+```
+
+Cells from  `r paste0(clustersUse, collapse = ",")` were selected. The cells selected are shown below:
+
+```{r}
+seuratObj$cellSelected <- NA
+
+anno <- read.csv("../../../AD3_highRes/annotation/all_anno_October_2022.csv")
+seuratObj$anno_oct <- anno$Annotation[match(seuratObj@active.ident, anno$Cluster)]
+
+seuratObj$cellSelected[colnames(seuratObj_subset_part1)] <- seuratObj$anno_oct[colnames(seuratObj_subset_part1)]
+seuratObj_subset_part1$annotation <- seuratObj$anno_oct[colnames(seuratObj_subset_part1)]
+
+
+
+DimPlot(seuratObj, group.by = "cellSelected")
+```
+
+
+### Clustering and annotation
+
+Cell cycle regression and harmony batch correction performed. The new clusters are shown below:  
+
+
+```{r, fig.width=25, fig.height = 15}
+
+p1 <- DimPlot(seuratObj_subset_part1, group.by = "RNA_snn_res.1", label = TRUE,  label.size =  5, repel = TRUE)  + ggtitle("new clusters, res.1")
+
+# seuratObj_subset_part1$cellSelected <- NA
+# seuratObj_subset_part1$cellSelected[colnames(seuratObj_subset)] <- seuratObj_subset_part1$RNA_snn_res.1[colnames(seuratObj_subset)]
+
+p2 <- DimPlot(seuratObj_subset_part1, group.by = "annotation", label = TRUE, label.size = 5,  repel = TRUE)
+
+
+p1  + p2 
+
+```
+
+
+### Further clustering
+
+Clusters `r clusters_to_remove ` were then removed  and the data reclustered:
+```{r, fig.width=25, fig.height = 15}
+
+p1 <- DimPlot(seuratObj_selected, group.by = "RNA_snn_res.1", label = TRUE,  label.size =  5, repel = TRUE)  + ggtitle("new clusters, res.1")
+
+p1b  <- DimPlot(seuratObj_selected, group.by = "RNA_snn_res.0.8", label = TRUE,  label.size =  5, repel = TRUE)  + ggtitle("new clusters, res.0.8")
+
+p1c  <- DimPlot(seuratObj_selected, group.by = "RNA_snn_res.0.6", label = TRUE,  label.size =  5, repel = TRUE)  + ggtitle("new clusters, res.0.6")
+
+
+
+
+p1  + p1b + p1c + p2 
+
+```
+
+
+
+
+
+
+## Clustered slected
+```{r}
+clustersSelected <- c(0:8)
+startingNode <- "Y_216"
+```
+
+Join 8 with cluster 4 (T1),  cluster 1 included. Start node from early RPC CLUSTER 3. Node `r startingNode` ,was used as the starting point for the trajectory. 
+
+### Scenario annotation
+
+```{r, , fig.width= 20}
+seuratObj_subset <- seuratObj_selected[, seuratObj_selected$RNA_snn_res.0.6 %in% clustersSelected]
+cds_subset_cc <- cds_selected[, colnames(seuratObj_subset)]
+
+anno_new <- read.csv(paste0("annotation/", outName, "_final.csv"), stringsAsFactors = FALSE)
+seuratObj_subset$CellType <- anno_new$Annotation[match(seuratObj_subset$RNA_snn_res.0.6, anno_new$Cluster)]
+cds_subset_cc$CellType <- seuratObj_subset$CellType
+
+p1 <- DimPlot(seuratObj_subset, group.by = "CellType")
+p2 <- plot_cells(cds_subset_cc, 
+           label_principal_points = TRUE, 
+           color_cells_by = "CellType"
+           )
+
+p2 + p1
+```
+
+ 
+```{r}
+# convert_seurat_to_cds.R 
+```
+
+```{r}
+cds_subset_cc <- order_cells(cds_subset_cc, root_pr_nodes = startingNode)
+```
+
+
+### Pseudotime Ordering
+
+The pseudotime ordering is shown below.
+
+```{r, fig.width = 8, fig.height=8}
+plot_cells(cds_subset_cc, 
+           label_principal_points = FALSE, 
+           color_cells_by = "pseudotime", show_trajectory_graph = FALSE
+           )
+```
+
+### Markers and heatmap for each cluster
+
+Markers were then found for each of the cell types. 
+
+```{r, eval = FALSE}
+findmarkers.R
+```
+
+```{r, fig.width= 20,fig.height=20}
+p1 <- pt_heatmap(seuratObj_subset, cds_subset_cc, scenario = "final" ) 
+
+```
+
+
+
+## High Res Plots
+
+
+## Selected cells 
+```{r}
+
+
+seuratObj$cellSelected[seuratObj$cellSelected %>% grepl("RPCs", .)] <- "RPCs"
+cells_included <- seuratObj$cellSelected %>% factor() %>% levels()
+
+colours_use <- colours$Colour[match(cells_included, colours$Annotation)]
+
+p1 <- DimPlot(seuratObj, group.by = "cellSelected") + scale_colour_manual(values = colours_use)
+
+
+
+fileName <- "RPCs_T1_T2_T3_selected"
+ggsave(paste0("highRes/", fileName, "_umap.tiff"), plot = p1,
+         width = 8,
+         height = 5,)
+
+```
+
+
+### UMAP
+
+```{r}
+scAnno <- colours$Colour[match(levels(factor(seuratObj_subset$CellType)), colours$Annotation)]
+
+p1 <- DimPlot(seuratObj_subset, label = FALSE, label.size = 5, pt.size = 1, group.by = "CellType") + 
+  theme_classic() + 
+  scale_colour_manual(values = scAnno)
+
+ggsave(filename = "highRes/RPCs_T1_T2_T3_umap_scenario5.tiff", plot = p1)
+```
+
+
+### heatmap
+
+```{r}
+p1 <- pt_heatmap(seuratObj_subset, cds_subset_cc, scenario = "final" ) 
+ggsave(paste0("highRes/heatmaps_", outName, ".tiff"), plot = p1, width = 12, height = 10)
+
+```
+
+
+### Pseudotime
+```{r}
+p2 <- plot_cells(cds_subset_cc, 
+           label_principal_points = FALSE, 
+           color_cells_by = "pseudotime", show_trajectory_graph = FALSE
+           )
+
+ggsave(filename = "highRes/RPCs_T1_T2_T3_pseudotime_colours_scenario5.tiff", plot = p2)
+```

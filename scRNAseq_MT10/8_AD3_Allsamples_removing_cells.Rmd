@@ -1,0 +1,274 @@
+---
+title: "AD3 all timepoints, reclustering"
+output:
+  html_document:
+    df_print: paged
+---
+
+```{r global_options, include=FALSE}
+knitr::opts_chunk$set(echo=FALSE, warning=FALSE, message=FALSE)
+```
+
+```{r libaries}
+library(dplyr)
+library(Seurat)
+library("ggplot2")
+library(monocle3)
+library(patchwork)
+library(SeuratWrappers)
+library(harmony)
+library(ggplotify)
+library(tidyverse)
+
+## source markers and plot function
+source("../../Retinal_expression_plots.R")
+
+sobjToCds <- function(sObj){
+  harmonyLoadings <- sObj@reductions[["harmony"]]@feature.loadings.projected
+  sObj <- DietSeurat(sObj, graphs = "umap")
+  cds <- as.cell_data_set(sObj)
+  cds <- cluster_cells(cds, reduction_method = "UMAP", k = 15)
+  cds <- learn_graph(cds, use_partition = FALSE)
+  ## Add gene names into CDS
+  rowData(cds)$gene_name <- rownames(cds)
+  rowData(cds)$gene_short_name <- rowData(cds)$gene_name
+  ## estimate size factors
+  cds <- estimate_size_factors(
+  cds,
+  round_exprs = TRUE,
+  method = c("mean-geometric-mean-total", "mean-geometric-mean-log-total")
+)
+  # add harmony reduction
+  cds@preprocess_aux$gene_loadings <- harmonyLoadings
+  
+  
+return(cds)
+}
+
+
+seuratObj <- readRDS("rObjects/seuratObj_integrated.rds")
+
+
+
+
+```
+
+
+# Reclusting {.tabset .tabset-fade .tabset-pills}
+
+## Cluster 13/1/22
+
+The integrated data (from 5_inegtation_AD3.Rmd) containing all AD3 samples was annotated using the powerpoint Ad3 organoids bh+ll sent on 2/11/21 (Slide 28)
+
+### Annotations
+
+```{r}
+outName <- "all_samples_clusters_removed"
+annotations <- read.csv(paste0("annotations/", outName, "_annotation"))
+annotations
+
+
+clustersToRemove <- annotations$Cluster[grepl("removed_", annotations$Cell_Type)]
+seuratObj_subset <- seuratObj[,!seuratObj@active.ident %in% clustersToRemove]
+annotations$Cluster <- factor(annotations$Cluster)
+seuratObj_subset$annotation <- annotations$Cell_Type[match(seuratObj_subset@active.ident, annotations$Cluster)]
+```
+
+### Annotated clusters
+
+```{r}
+DimPlot(seuratObj_subset, group.by = "annotation")
+```
+
+
+The data was then reprocessed using harmony batch correction and cell cycle regression, and re-clustered. There were 36 clusters. The cells seem to still be grouped by the cell type annotation used previously. Marker genes were found for each of the new clusters.
+(Linda and Birthe Analysis on slide 33)
+
+```{r, eval = FALSE}
+## cell cycle genes
+s.genes <- cc.genes$s.genes
+g2m.genes <- cc.genes$g2m.genes
+
+
+
+seuratObj_reclustered <- seuratObj_subset %>% 
+  CellCycleScoring(s.features = s.genes, 
+                   g2m.features = g2m.genes, 
+                   set.ident = FALSE) %>% 
+  Seurat::NormalizeData(verbose = FALSE) %>%
+  FindVariableFeatures(selection.method = "vst", nfeatures = 2000) %>% 
+  ScaleData(verbose = FALSE, 
+            vars.to.regress = c("nCount_RNA", "nFeature_RNA", "percent.mt")) %>% 
+  RunPCA(pc.genes = seuratObj_ds@var.genes, npcs = 20, verbose = FALSE) %>%
+  RunHarmony(c("batch", "seq_batch", "orig.ident"), plot_convergence = FALSE) %>%
+  RunUMAP(reduction = "harmony", dims = 1:10) %>%
+  FindNeighbors(reduction = "harmony", dims = 1:10) %>% 
+  FindClusters(resolution = c(0.2,1,2.2))
+
+
+## Find Markers
+markers <- FindAllMarkers(seuratObj_reclustered, only.pos = TRUE, logfc.threshold = 0.5 )
+markers <- markers %>% arrange(cluster, desc(avg_log2FC))
+
+fName <- paste0("csvFiles/markers_annotation_", outName, ".csv")
+write.csv(markers, fName)
+fName <- gsub("csvFiles", "rObjects", fName) %>% gsub(".csv", ".rds", .)
+
+saveRDS(seuratObj_reclustered, paste0("rObjects/seurat_", outName, ".rds"))
+```
+
+
+### New Clusters
+
+```{r, fig.width=20, fig.height = 15}
+seuratObj_reclustered <- readRDS(paste0("rObjects/seurat_", outName, ".rds"))
+p1 <- DimPlot(seuratObj_reclustered, label = TRUE) + ggtitle("New clusters")
+p2 <- DimPlot(seuratObj_reclustered, group.by = "annotation", label = TRUE, repel = TRUE) + ggtitle("Previous annotation")
+p3 <- DimPlot(seuratObj_reclustered, group.by = "day", label = TRUE) + ggtitle("Timepoint")
+
+p1 
+p2 
+p3
+
+```
+
+
+
+
+
+## Clusters 17/1/22 (with 20)
+
+### Clusters Removed
+
+17/1/22 The data was the annotated by Linda and Birthe (slide 33) and reclustered.
+
+```{r}
+annotations <- read.csv("annotations/all_samples_17_1_2022")
+annotations
+```
+
+```{r,fig.width=15, fig.height = 15}
+
+clustersToRemove <- annotations$Cluster[grepl("removed_", annotations$Cell_Type)]
+DimPlot(seuratObj_reclustered[,!seuratObj_reclustered@active.ident %in% clustersToRemove], label = TRUE, repel = TRUE)
+```
+
+
+```{r, eval = FALSE}
+# Reclustering_17_1_22.R
+```
+
+### New Clusters
+
+```{r, fig.width=15, fig.height = 15}
+outName <- "17_1_22"
+seuratObj_reclustered_with <- readRDS(paste0("rObjects/seurat_", outName, ".rds"))
+
+p1 <- DimPlot(seuratObj_reclustered_with, label = TRUE) + ggtitle("New clusters")
+p2 <- DimPlot(seuratObj_reclustered_with, group.by = "annotation", label = TRUE, repel = TRUE) + ggtitle("Previous annotation")
+p3 <- DimPlot(seuratObj_reclustered_with, group.by = "day", label = TRUE) + ggtitle("Timepoint")
+
+p1 
+p2 
+p3
+
+```
+
+
+## Pluripotent Stem Cells
+
+Add modules was used to calculate average expression for "L1TD1",
+"POU5F1",
+"DNMT3B",
+"TERF1",
+"DPPA4",
+"LIN28A"
+
+Cells with an expression greater than 1 were then removed from the analysis (44889/48585)
+
+
+
+```{r, eval = FALSE}
+pluriGenes <- list(c("L1TD1",
+"POU5F1",
+"DNMT3B",
+"TERF1",
+"DPPA4",
+"LIN28A"))
+
+
+
+seuratObj_reclustered_with <- AddModuleScore(seuratObj_reclustered_with, features = pluriGenes, name = "Pluripotent")
+outName <- "17_1_22"
+saveRDS(seuratObj_reclustered_with,
+            paste0("rObjects/seurat_", outName, ".rds"))
+
+
+
+
+
+
+
+
+
+```
+
+```{r}
+FeaturePlot(seuratObj_reclustered_with, "Pluripotent1", min.cutoff = 0, max.cutoff = 1)
+```
+
+The data was then reprocessed using harmony batch correction and cell cycle regression, and re-clustered.  Marker genes were found for each of the new clusters.
+
+
+```{r, eval = FALSE}
+
+seuratObj_pluripotent_removed <- seuratObj_reclustered_with[,seuratObj_reclustered_with$Pluripotent1 < 1]
+
+## cell cycle genes
+s.genes <- cc.genes$s.genes
+g2m.genes <- cc.genes$g2m.genes
+
+
+
+seuratObj_pluripotent_removed <- seuratObj_pluripotent_removed %>% 
+  CellCycleScoring(s.features = s.genes, 
+                   g2m.features = g2m.genes, 
+                   set.ident = FALSE) %>% 
+  Seurat::NormalizeData(verbose = FALSE) %>%
+  FindVariableFeatures(selection.method = "vst", nfeatures = 2000) %>% 
+  ScaleData(verbose = FALSE, 
+            vars.to.regress = c("nCount_RNA", "nFeature_RNA", "percent.mt")) %>% 
+  RunPCA(pc.genes = seuratObj_ds@var.genes, npcs = 20, verbose = FALSE) %>%
+  RunHarmony(c("batch", "seq_batch", "orig.ident"), plot_convergence = FALSE) %>%
+  RunUMAP(reduction = "harmony", dims = 1:10) %>%
+  FindNeighbors(reduction = "harmony", dims = 1:10) %>% 
+  FindClusters(resolution = c(0.2,1,2.2))
+
+outName <- "clusters_and_pluripotent_removed"
+saveRDS(seuratObj_pluripotent_removed, paste0("rObjects/seurat_", outName, ".rds"))
+## Find Markers
+markers <- FindAllMarkers(seuratObj_pluripotent_removed, only.pos = TRUE, logfc.threshold = 0.5 )
+markers <- markers %>% arrange(cluster, desc(avg_log2FC))
+
+fName <- paste0("csvFiles/markers_annotation_", outName, ".csv")
+write.csv(markers, fName)
+fName <- gsub("csvFiles", "rObjects", fName) %>% gsub(".csv", ".rds", .)
+
+
+```
+
+### New Clusters
+
+```{r, fig.width=20, fig.height = 15}
+outName <- "clusters_and_pluripotent_removed"
+
+seuratObj_pluripotent_removed <- readRDS(paste0("rObjects/seurat_", outName, ".rds"))
+p1 <- DimPlot(seuratObj_pluripotent_removed, label = TRUE) + ggtitle("New clusters")
+p2 <- DimPlot(seuratObj_pluripotent_removed, group.by = "annotation", label = TRUE, repel = TRUE) + ggtitle("Previous annotation")
+p3 <- DimPlot(seuratObj_pluripotent_removed, group.by = "day", label = TRUE) + ggtitle("Timepoint")
+
+p1 
+p2 
+p3
+
+```

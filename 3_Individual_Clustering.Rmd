@@ -1,0 +1,154 @@
+---
+title: "Individual Clustering"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(echo=FALSE, warning=FALSE, message=FALSE)
+```
+
+```{r, libraries}
+
+library(Seurat)
+library(cowplot)
+library(SCFunctionsV3)
+library(dplyr)
+library(tidyr)
+library(stringr)
+library(tidyverse)
+library(DoubletFinder)
+library(pheatmap)
+library(ggplot2)
+
+
+### Functions
+howManyCells <- function(sObj){dim(sObj)[2]}
+
+
+### Functions
+preDoublets <- function(seuratObj){  
+    seuratObj <- NormalizeData(seuratObj)
+    
+    seuratObj <- ScaleData(seuratObj)
+    seuratObj <- FindVariableFeatures(seuratObj, 
+                                      x.low.cutoff = 0.0125, 
+                                      y.cutoff = 0.25, 
+                                      do.plot=FALSE)
+    seuratObj <- RunPCA(seuratObj, pc.genes = seuratObj@var.genes, pcs.print = 0)
+    
+    # set.seed(1234)
+    # seuratObj <- RunTSNE(seuratObj, dims.use = 1:10, verbose=TRUE)
+    return(seuratObj)
+}
+
+findDoublets <- function(seuratObj){
+    
+    ### calculate expected number of doublets
+    nExp_poi  <- round(0.15*nrow(seuratObj@meta.data))
+    
+    ### predict doublets
+    seuratObj <- doubletFinder_v3(seuratObj, 
+                                  PCs = 1:10, 
+                                  pN = 0.25, 
+                                  pK = 0.01, 
+                                  nExp = nExp_poi, 
+                                  reuse.pANN = FALSE, 
+                                  sct=FALSE)
+    
+    
+    seuratObj@meta.data <- seuratObj@meta.data %>% 
+        rename_at(vars(starts_with("DF.classifications")), 
+                  funs(str_replace(., ".*", "DF.classifications"))) %>%
+        rename_at(vars(starts_with("pANN")), 
+                  funs(str_replace(., ".*", "pANN")))
+    
+    return(seuratObj) 
+    
+}
+
+getwd()
+
+sObj_Filtered <- readRDS("rObjects/sObj_Filtered_all.rds")
+sampleInfo <- readRDS("rObjects/sampleInfo_all.rds")
+
+
+```
+
+
+
+```{r, eval = FALSE}
+# Cluster Cells
+# 3_Individual_Clustering
+```
+
+
+Each sample was clustered at a resolution of 1. The clusters generated are shown below.
+
+
+```{r, fig.height=15, fig.width=15}
+##plot samples
+plotUMAP <- function(sObj){
+  p1 <- DimPlot(sObj, label = TRUE) 
+  return(p1)}
+lapply(sObj_Filtered, plotUMAP)
+
+
+```
+
+
+
+
+```{r}
+plotUMAP <- function(gene, i){
+  sObj <- sObj_Filtered[[i]]
+  p1 <- FeaturePlot(sObj, 
+                    feature = gene,
+                    min.cutoff = "q1", 
+                    cols = c("#E5E5E5", "#FF0000"), 
+                    label = TRUE, order = TRUE, label.size = 2)  + ggtitle(gene, paste( sampleInfo$fName[i]))
+  return(p1)}
+
+
+covid_genes <- readRDS("rObjects/covid_genes.rds")
+
+i <- 1
+lapply(intersect(covid_genes, rownames(sObj_Filtered[[i]])),
+       plotUMAP,
+       i)
+
+i <- 3
+lapply(intersect(covid_genes, rownames(sObj_Filtered[[i]])),
+       plotUMAP,
+       i)
+
+
+i <- 5
+lapply(intersect(covid_genes, rownames(sObj_Filtered[[i]])),
+       plotUMAP,
+       i)
+
+```
+
+
+Marker genes were identified in each cluster. 
+                  
+```{r, eval = FALSE}
+#3_Individual_Clustering.R
+```
+
+## Top 5 genes
+```{r, fig.height=20, fig.width=15}
+for (i in 1:nrow(sampleInfo)){
+fName <- paste0("rObjects/", sampleInfo$fName[i], "run1.rds")
+top5 <- readRDS(fName) %>% group_by(cluster) %>% top_n(n = 5, wt = avg_log2FC) 
+
+print(DoHeatmap(sObj_Filtered[[i]], features = top5$gene) + ggtitle(paste( sampleInfo$fName[i])))
+}
+```
+
+
+
+
+
+

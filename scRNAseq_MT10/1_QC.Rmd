@@ -1,0 +1,176 @@
+---
+title: "QC"
+output:
+  html_document:
+    df_print: paged
+---
+
+
+
+```{r global_options, include=FALSE}
+knitr::opts_chunk$set(echo=FALSE, warning=FALSE, message=FALSE)
+
+```
+
+
+
+```{r, libraries}
+
+library(Seurat)
+library(cowplot)
+library(SCFunctionsV3)
+library(dplyr)
+library(tidyr)
+library(stringr)
+library(tidyverse)
+library(DoubletFinder)
+library(pheatmap)
+
+
+### Functions
+howManyCells <- function(sObj){dim(sObj)[2]}
+
+
+### Functions
+preDoublets <- function(seuratObj){  
+    seuratObj <- NormalizeData(seuratObj)
+    
+    seuratObj <- ScaleData(seuratObj)
+    seuratObj <- FindVariableFeatures(seuratObj, 
+                                      x.low.cutoff = 0.0125, 
+                                      y.cutoff = 0.25, 
+                                      do.plot=FALSE)
+    seuratObj <- RunPCA(seuratObj, pc.genes = seuratObj@var.genes, pcs.print = 0)
+    
+    # set.seed(1234)
+    # seuratObj <- RunTSNE(seuratObj, dims.use = 1:10, verbose=TRUE)
+    return(seuratObj)
+}
+
+findDoublets <- function(seuratObj){
+    
+    ### calculate expected number of doublets
+    nExp_poi  <- round(0.15*nrow(seuratObj@meta.data))
+    
+    ### predict doublets
+    seuratObj <- doubletFinder_v3(seuratObj, 
+                                  PCs = 1:10, 
+                                  pN = 0.25, 
+                                  pK = 0.01, 
+                                  nExp = nExp_poi, 
+                                  reuse.pANN = FALSE, 
+                                  sct=FALSE)
+    
+    
+    seuratObj@meta.data <- seuratObj@meta.data %>% 
+        rename_at(vars(starts_with("DF.classifications")), 
+                  funs(str_replace(., ".*", "DF.classifications"))) %>%
+        rename_at(vars(starts_with("pANN")), 
+                  funs(str_replace(., ".*", "pANN")))
+    
+    return(seuratObj) 
+    
+}
+
+
+
+```
+
+```{r}
+# after processing
+sObj_List <- readRDS("rObjects/sObj_List_all.rds")
+sObj_Filtered <- readRDS("rObjects/sObj_Filtered_all.rds")
+
+```
+
+# Samples
+
+```{r}
+sampleInfo <- readRDS("rObjects/sampleInfo_all.rds")
+sampleInfo[,]
+
+```
+
+The sequencing data was aligned to human reference genome (GRCh38) using CellRanger Version 3.0.1.
+
+
+```{r, eval = FALSE}
+# 1_QC.R
+```
+
+
+### QC
+
+It is important to exclude dead cells and debris from downstream analysis.  This can be done by filtering cells which have low number of reads or genes or a high percentage of mitochondrial reads. The plots below were used to set filtering threshold for the data.
+
+```{r}
+nCount_RNA_List <- list()
+nFeature_RNA_List <- list()
+mt_List <- list()
+
+
+minCounts <- 1000
+minFeatures <- 500
+maxMit <- 10
+
+
+for (i in 1:nrow(sampleInfo)){
+  nCount_RNA_List[[i]] <- QCplotHist(sObj_List[[i]], "nCount_RNA", Xmin =  0  , Xmax = 80000,
+    NumberOfBins = 20) + xlim(minCounts, 80000) + ggtitle(sampleInfo$fName[i])
+  
+  nFeature_RNA_List[[i]] <- QCplotHist(sObj_List[[i]], "nFeature_RNA",  Xmax = NULL, Xmin = minFeatures,
+    NumberOfBins = 15) + ggtitle(sampleInfo$fName[i])
+  
+  mt_List[[i]] <- FeatureScatter(object = sObj_List[[i]], 
+                 feature1 = "nFeature_RNA", 
+                 feature2 = "percent.mt") + 
+       geom_hline(yintercept = maxMit) + ggtitle(sampleInfo$fName[i])
+   
+}
+```
+
+
+## Number of Counts per cell
+
+```{r, fig.height=20, fig.width = 20}
+plot_grid(plotlist = nCount_RNA_List, ncol = 1)
+```
+
+## Number of Gene per cell
+
+```{r, fig.height=20, fig.width = 20}
+plot_grid(plotlist = nFeature_RNA_List, ncol = 1)
+```
+
+## Percentage mitochondrial reads
+
+```{r, fig.height=15, fig.width = 20}
+plot_grid(plotlist = mt_List, ncol = 2)
+```
+
+
+### Filtering
+
+The following filtering thresholds were applied to the data:    
+
+minimum counts per cell: 1000   
+minimum genes per cell: 500   
+maximum percentage mitochondria: 10%    
+
+```{r, eval = FALSE}
+# 1_QC.R
+```
+
+
+
+
+The number of cells for each sample before and after filtering is shown below:
+
+```{r}
+sampleInfo
+```
+
+
+
+
+
