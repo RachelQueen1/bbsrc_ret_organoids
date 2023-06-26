@@ -1,0 +1,234 @@
+---
+title: "`r thetitle`"
+output:
+  html_document:
+    df_print: paged
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo=FALSE, warning=FALSE, message=FALSE)
+```
+
+
+```{r}
+library(Spaniel)
+library(scran)
+library(scater)
+library(batchelor)
+library(dplyr)
+library(Seurat)
+library(SCFunctionsV3)
+library(cowplot)
+library(RColorBrewer)
+```
+
+Samples
+
+Tissue: AD3 day `r day`
+
+Number of Gene Expression slides in this run: One Slide, 4 adjacent sections.
+Reference and Software Used
+
+Sequencing data was aligned to reference genome (GRCh38) using Space Ranger (version 1.0). The Spaniel R package (version 1.2.0) was used to import the data in to R and was also used here to create the spot - images. Seurat version 3.2.3 was used for the clustering analysis and to find marker genes.
+
+
+
+```{r}
+sObj <- readRDS(file.path(outputDir, paste0(sampleName, "_seurat.rds")))
+seurat_list <- SplitObject(sObj, split.by = "section")
+
+sce_list <- readRDS(file.path(outputDir, paste0(sampleName, "_sce.rds")))
+
+
+samples <- paste0(sampleName, c("_A1", "_B1", "_C1","_D1"))
+day <- gsub("AD3_D", "", sampleName) %>% as.numeric()
+
+sampleInfo <- data.frame(id = samples,
+                         tissue = "AD3", 
+                         day = day)
+
+markers <- readRDS(file.path(outputDir, paste0(sampleName, ".rds"))) 
+gene_anno <- rowData(sce_list[[1]]) %>% data.frame() %>% dplyr::rename(gene = ID)
+markers <- markers %>% left_join(gene_anno)
+write.csv(markers, file.path(projDir, "csvFiles", paste0(sampleName, ".csv")))
+```
+
+# QC
+
+```{r}
+Number_of_spots <- function(sObj){dim(sObj)[2] }
+Median_number_genes <- function(sObj){median(sObj$detected)}
+Mean_number_reads <- function(sObj){mean(sObj$sum)}
+
+Number_of_spots_per_section <- lapply(sce_list, Number_of_spots) %>% unlist() 
+Median_number_genes_per_spot <- lapply(sce_list, Median_number_genes) %>% unlist() 
+Mean_number_reads_per_spot <- lapply(sce_list, Mean_number_reads) %>% unlist() 
+
+sample_QC <- data.frame(id = sampleInfo$id,
+                        Number_of_spots_per_section,
+                        Median_number_genes_per_spot,
+                        Mean_number_reads_per_spot) 
+
+
+
+sample_QC %>% tibble::remove_rownames()
+```
+
+
+```{r}
+nCount_RNA_List <- list()
+nFeature_RNA_List <- list()
+mt_List <- list()
+
+
+minCounts <- 1000
+minFeatures <- 500
+maxMit <- 0.15
+
+
+for (i in 1:nrow(sampleInfo)){
+  nCount_RNA_List[[i]] <- QCplotHist(seurat_list[[i]], "total", Xmin =  0,
+    NumberOfBins = 20)  + ggtitle(sampleInfo$id[i])
+  
+  nFeature_RNA_List[[i]] <- QCplotHist(seurat_list[[i]], "detected",  Xmax = NULL, Xmin = minFeatures,
+    NumberOfBins = 15) + ggtitle(sampleInfo$id[i])
+  
+  mt_List[[i]] <- FeatureScatter(object = seurat_list[[i]], 
+                 feature1 = "detected", 
+                 feature2 = "subsets_Mito_percent",  group.by = "section") + 
+       geom_hline(yintercept = maxMit) + ggtitle(sampleInfo$id[i])
+   
+}
+```
+
+### Number of Counts per spot
+
+```{r, fig.height=10, fig.width = 10}
+plot_grid(plotlist = nCount_RNA_List, ncol = 1)
+```
+
+### Number of Genes per spot
+
+```{r, fig.height=10, fig.width = 10}
+plot_grid(plotlist = nFeature_RNA_List, ncol = 1)
+```
+
+### Percentage mitochondrial reads
+
+The percentage of mitohcondrial reads was higher for section B than the other samples.
+
+```{r, fig.height=10, fig.width = 10}
+plot_grid(plotlist = mt_List, ncol = 1)
+```
+
+
+# Sample Integration and Clustering Analysis
+
+Each of the replicated sections were combined using integration methods from the Seurat package.  A resolution of 0.5 was used for the clustering. 
+```{r}
+clusterPlot <- function(sce, cl = "cluster"){
+  plotTitle <- samp <- sce$id %>% unique()
+  p1 <- spanielPlot(object = sce,
+        plotType = "Cluster",
+        clusterRes = cl,
+        showFilter = NULL,
+        techType = "Visium",
+        ptSizeMax = 1,
+        customTitle = plotTitle) #+ scale_color_manual(values = plotCols)
+  
+  ##zoom into tissue
+  x_range <- sce$pixel_x %>% range()
+  y_range <- sce$pixel_y %>% range()
+  imgSizes <- sce@metadata$ImgDims
+  
+  p1 <- p1 +  coord_cartesian(xlim=x_range, ylim = y_range) 
+  
+  return(p1)
+}
+
+
+```
+
+
+## UMAP plot 
+
+
+```{r, fig.width=20}
+
+plotCols <- c("#ff6a00", "#ff0000","#00ff44" ,  "#2600ff", "#fff200", "#00fff7", "#e607e2" )
+
+p1 <- DimPlot(sObj, group.by = "section")
+p2 <- DimPlot(sObj, label = TRUE) 
+
+plot_grid(p1, p2)
+```
+
+## Spatial plot 
+
+The clusters were overlaid onto the histological images. 
+
+```{r, fig.height=10, fig.width=10}
+
+plot_list <- lapply(sce_list, clusterPlot, cl = "cluster")
+plot_grid(plotlist = plot_list)
+```
+
+
+
+# Individual Clusters
+
+```{r,  fig.height=10, fig.width=10}
+individualCluster <- function(sce, clusterNo){
+  section <- sce$section %>%unique()
+  plotTitle <- paste("Cluster", clusterNo, section)
+  ##zoom into tissue
+  x_range <- sce$pixel_x %>% range()
+  y_range <- sce$pixel_y %>% range()
+  imgSizes <- sce@metadata$ImgDims
+  
+  sce_subset <- sce[, sce$cluster == clusterNo ]
+  
+  p1 <- spanielPlot(object = sce_subset,
+        plotType = "Cluster",
+        clusterRes = "cluster",
+        showFilter = NULL,
+        techType = "Visium",
+        ptSizeMax = 1,
+        customTitle = plotTitle) +scale_color_manual(values = "#08519c")
+  
+  p1 <- p1 +  coord_cartesian(xlim=x_range, ylim = y_range)
+  
+  return(p1)
+}
+
+noClusters <- sObj@active.ident %>% as.character() %>% as.numeric() %>% max()
+clusterNo <- 0
+
+
+i <- clusterNo + 1
+
+for (clusterNo in 0:noClusters){
+  plot_list <- lapply(sce_list, individualCluster, clusterNo)
+  print(plot_grid(plotlist = plot_list, ncol = 2))
+  }
+
+
+```
+
+
+
+
+# Differential Expression analysis
+
+Differential Expression analysis was performed to identify marker genes within the clusters for each tissue section.
+
+```{r, fig.width = 20, fig.height = 20}
+top10 <- markers %>% group_by(cluster) %>% top_n(n = 10, wt = avg_log2FC) 
+p1 <- DoHeatmap(sObj, features = top10$gene)
+mm <- match(p1$data$Feature, gene_anno$gene)
+p1$data$Feature <- gene_anno$Symbol[mm]
+
+p1
+
+```
+
