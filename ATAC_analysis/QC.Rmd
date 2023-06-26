@@ -1,0 +1,133 @@
+---
+title: "QC - ATACseq"
+output:
+  html_document:
+    df_print: paged
+---
+
+
+```{r global_options, include=FALSE}
+knitr::opts_chunk$set(echo=FALSE, warning=FALSE, message=FALSE)
+
+```
+
+
+```{r, libraries}
+
+library(Signac)
+library(Seurat)
+library(GenomeInfoDb)
+library(EnsDb.Hsapiens.v86)
+library(ggplot2)
+library(dplyr)
+library(patchwork)
+library(rtracklayer)
+library(cowplot)
+
+
+set.seed(1234)
+
+
+
+
+```
+
+
+```{r}
+#after processing with:
+# QC.R
+# individual_clustering.R
+sObj_List <- readRDS("rObjects/sObj_List.rds")
+sObj_filtered <- readRDS("rObjects/sObj_cluster.rds")
+names(sObj_filtered) <- sapply(sObj_filtered, function(x){x$sample_id %>% unique()})
+sampleInfo <- readRDS("rObjects/sampleInfo.rds")
+
+```
+
+
+```{r}
+## create plot lists
+TSS_Enrich_List <- list()
+NS_List <- list()
+Violin_List <- list()
+
+for (i in 1:nrow(sampleInfo)){
+
+TSS_Enrich_List[[i]] <- TSSPlot(sObj_List[[i]], group.by = 'high.tss') + ggtitle(sampleInfo$fName[i])
+
+
+NS_List[[i]] <- FragmentHistogram(object = sObj_List[[i]], group.by = 'nucleosome_group') + ggtitle(sampleInfo$fName[i])
+
+
+Violin_List[[i]] <- VlnPlot(object = sObj_List[[i]],features = c('pct_reads_in_peaks', 'peak_region_fragments','TSS.enrichment', 'blacklist_ratio', 'nucleosome_signal'),
+  pt.size = 0.1,
+  ncol = 5) 
+
+}
+
+```
+
+### Transcriptional start site (TSS) enrichment score.
+```{r, fig.height=15, fig.width = 20}
+plot_grid(plotlist = TSS_Enrich_List, ncol = 3)
+```
+
+
+
+### Nucleosome banding pattern
+```{r, fig.height=15, fig.width = 20}
+plot_grid(plotlist = NS_List, ncol = 3)
+```
+
+### Violin plot of all QC metrics
+
+```{r, fig.height=25, fig.width = 20}
+plot_grid(plotlist = Violin_List[1:7], ncol = 1)
+```
+
+```{r, fig.height=25, fig.width = 20}
+plot_grid(plotlist = Violin_List[8:13], ncol = 1)
+```
+
+
+### Remove cells that are outliers for these QC metrics.
+
+Pct reads in peaks > 20%;
+Peak region fragments  > 3000 & < 20,000;
+TSS enrichment > 2;
+Blacklist ratio < 0.05;
+Nucleome signal < 4
+
+
+
+```{r, eval = FALSE}
+# individual_clusering.R
+```
+
+
+# Sample Info 
+```{r}
+sampleInfo
+```
+
+
+## Clustering of individual samples: 
+
+The filtered data was normalised and then linear dimension reduction applied followed by non-linear dimension reduction and clustering.  The clusters are shown below.
+
+
+```{r}
+Dim_List <- list()
+for (i in 1:nrow(sampleInfo)){
+  Dim_List[[sampleInfo$Day[i]]] <- DimPlot(object = sObj_filtered[[i]], label = TRUE)  +
+    
+    ggtitle(sampleInfo$Day[i])
+
+}
+
+```
+
+```{r, fig.height=20, fig.width=20}
+plot_grid(plotlist = Dim_List[c("D0", "D2", "D10", "D20")], ncol = 2)
+plot_grid(plotlist = Dim_List[c("D33", "D90", "D150", "D210")], ncol = 2)
+```

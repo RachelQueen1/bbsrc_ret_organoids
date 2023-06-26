@@ -1,0 +1,342 @@
+---
+title: "Monocle pCM RPCs T1 T3 rods cones BPs - organoids"
+output:
+  html_document:
+    df_print: paged
+---
+
+
+```{r global_options, include=FALSE}
+knitr::opts_chunk$set(echo=FALSE, warning=FALSE, message=FALSE)
+
+```
+
+
+```{r, libraries}
+library(tidyverse)
+library(Signac)
+library(Seurat)
+library(JASPAR2020)
+library(GenomeInfoDb)
+library(EnsDb.Hsapiens.v86)
+library(TFBSTools)
+library(monocle3)
+library(SeuratWrappers)
+library(patchwork)
+
+pfm <- getMatrixSet(
+  x = JASPAR2020,
+  opts = list(collection = "CORE", tax_group = 'vertebrates', all_versions = FALSE)
+)
+
+# motifs <- sapply(pfm, function(x){x@name})
+# motif_df <- data.frame(motif = names(motifs),
+#            name = unname(motifs)
+#            )
+# 
+# 
+# retina_markers <- readRDS("../markers/Retina_Markers.rds")
+# #retina_markers_df <-
+# 
+# 
+# motif_df$motif[match(retina_markers[[2]], motif_df$name)]
+motifs <- readRDS("rObjects/shared_enriched_motifs_cellTypes.rds")
+sObj <- readRDS("rObjects/shared_sObj_merge_retina_with45_60.rds")
+# DimPlot(integrated, label = TRUE)
+
+
+motif_expr <- sObj@assays$chromvar@data
+motif_expr <- motif_expr[rowSums(motif_expr) > 0 ,]
+sObj$nMotif <- motif_expr %>% colSums()
+
+sObj$CellType <- sObj$CellType %>% as.character()
+## remove space
+sObj$CellType[grepl("MG", sObj$CellType)] <- "MG"
+cellorder <- c("pCM", "early RPCs","late RPCs", "T1","T2","T3","RGCs", "HCs + ACs", "cones", "rods", "BPs", "microglia", "MG")
+
+sObj$CellType <- factor(sObj$CellType, levels = cellorder)
+
+sObj <- SetIdent(sObj, value = "CellType")
+```
+
+```{r, atac_subset}
+##variables to change
+pseudotime_order <- c("pCM", "early RPCs", "late RPCs", "T1", "T3", "cones", "rods", "BPS")
+
+atacName <- "pCM_RPC_T1_T3_cones_rods_BPs"
+atacTitle <- "pCM - early RPC - late RPC - T1 - T3 - cones - rods - BPs"
+sObj_ATAC_subset <- readRDS(paste0("rObjects/seurat_PT_",atacName, ".rds"))
+
+##create out dir
+dir.create(file.path("highRes", atacName), showWarnings = FALSE)
+
+## create cds object
+cds <- as.cell_data_set(sObj_ATAC_subset)
+cds <- cluster_cells(cds = cds, reduction_method = "UMAP")
+cds <- learn_graph(cds, use_partition = FALSE, close_loop = FALSE)
+
+
+start_Node_ATAC <- "Y_1"
+#plot_cells(cds, show_trajectory_graph = TRUE, label_principal_points = TRUE)
+
+cds <- order_cells(cds, reduction_method = "UMAP", root_pr_nodes = start_Node_ATAC)
+
+
+
+### add pseudotime back to seurat object
+sObj <- AddMetaData(
+  object = sObj,
+  metadata = abs(cds@principal_graph_aux@listData$UMAP$pseudotime),
+  col.name = "pseudotime"
+)
+
+```
+
+
+
+
+## Annotate cells
+
+The cells were annotated using the annotations on slide 155 with new AC definitions:
+
+```{r}
+DimPlot(sObj, group.by = "CellType", label = TRUE)
+
+
+```
+
+
+
+## RPCs T1 T3 trajectory
+```{r}
+start_Node = "Y_1"
+```
+
+The RPCs T1 T3 cell types were selected and Monocle 3 pseudotime analysis performe starting from `r start_Node_ATAC`.  
+
+```{r, eval = FALSE}
+
+## subset_for_pseudotime.R
+
+
+```
+
+
+```{r}
+p1 <- plot_cells(
+  cds = cds,
+  show_trajectory_graph = TRUE,
+  color_cells_by = "CellType", label_principal_points = TRUE, cell_stroke = .5
+) 
+
+
+
+
+
+p1 <- p1
+p1$layers[[1]] <- NULL
+p1
+```
+
+
+
+```{r}
+p0 <-  plot_cells(
+  cds = cds,
+  show_trajectory_graph = TRUE,
+  color_cells_by = "pseudotime", label_principal_points = TRUE,  cell_stroke = .5
+) 
+
+p0$layers[[1]] <- NULL
+p0
+
+```
+
+The pseudotime estimated are shown on the original umap below:
+
+
+```{r}
+DimPlot(sObj, group.by = "CellType", label = TRUE)
+
+FeaturePlot(sObj, c("pseudotime"), pt.size = 0.1) & scale_color_viridis_c()
+
+```
+
+
+
+The correlation between pseudotime between motifs enrichment was calculated:
+
+```{r}
+cellTypes <- names(motifs)
+pseudotime <-sObj$pseudotime[!is.na(sObj$pseudotime)]
+cor_row <- function(x){cor(pseudotime, x) }
+
+
+addCorrelation <- function(cellType){
+motif_mat <- sObj@assays$chromvar@data[motifs[[cellType]]$motif,!is.na(sObj$pseudotime)]
+motifs[[cellType]]$corr_pseudotime <- apply(motif_mat, 1, cor_row)
+return(motifs[[cellType]])
+}
+
+
+motifs <- lapply(names(motifs), addCorrelation)
+names(motifs) <- cellTypes
+
+```
+
+
+## Top Motif plots {.tabset .tabset-pills}
+
+The motif lists were filtered to include only motifs in at least 30% of the cells that there were enriched for with a log fold change of over 2. The top 5 absolute correlation scores for each cell type then selected
+
+
+```{r}
+motifs_filtered <- lapply(motifs, function(x) {x[x$fold.enrichment > 2 & x$percent.observed > 30, ]})
+findTopMotifs <- function(x){x %>% arrange(desc(abs(corr_pseudotime))) %>% head(n = 5)}
+topMotifs <- lapply(motifs_filtered, findTopMotifs)
+
+```
+
+```{r}
+MotifFeaturePlot <- function(motif){
+  motif_name <- motifs[[1]]$motif.name[motifs[[1]]$motif == motif]
+  p1 <- FeaturePlot(sObj, motif, min.cutoff = 0, cols = c("lightgrey", "red"), order = TRUE, pt.size = 1 ) + ggtitle( paste(motif_name, motif))
+  p2 <- MotifPlot(sObj, motif )
+ layout <- '
+A#
+AB
+'
+p3 <- p1 + p2   +
+  plot_layout(design = layout, widths = c(2,1))
+  return(p3)
+}
+
+
+
+DefaultAssay(sObj) <- "peaks"
+```
+
+
+
+```{r}
+motif_names <- sObj@assays$peaks@motifs@motif.names
+
+pCM <- topMotifs[["pCM"]]$motif
+earlyRPCs <- topMotifs[["early RPCs"]]$motif
+lateRPCs <- topMotifs[["late RPCs"]]$motif
+T1 <- topMotifs[["T1"]]$motif
+T3 <- c(topMotifs[["T3"]]$motif)
+cones <- c(topMotifs[["cones"]]$motif)
+rods <- c(topMotifs[["rods"]]$motif)
+BPs <- c(topMotifs[["BPs"]]$motif)
+
+all <- data.frame(motif = unique(c(pCM,earlyRPCs,lateRPCs,T1,T3)))
+
+all$pCM <- all$motif %in% pCM
+all$earlyRPCs <- all$motif %in% earlyRPCs
+all$lateRPCs <- all$motif %in% lateRPCs
+all$T1 <- all$motif %in% T1
+all$T3 <- all$motif %in% T3
+all$cones <- all$motif %in% cones
+all$rods <- all$motif %in% rods
+all$BPs <- all$motif %in% BPs
+
+cell_types <- colnames(all)[-1]
+getCluster <- function(x){
+y <- paste0(cell_types[x], collapse = "_")
+return(y)}
+
+all$cluster <- apply(all[,cell_types], 1, getCluster)
+
+all$motif_names <- motif_names[all$motif] %>%unlist() %>% unname()
+```
+## pCM
+
+```{r}
+cluster <- "pCM"
+motifs_to_plot <- all$motif[all$cluster == cluster]
+
+lapply(motifs_to_plot , MotifFeaturePlot)
+
+# motifs_names_to_plot <- all$motif_names[all$cluster == cluster] %>% intersect(footprints)
+# if(length(motifs_names_to_plot) > 0){
+# PlotFootprint(sObj, features = motifs_names_to_plot)}
+```
+
+
+## pCM + rods
+```{r}
+cluster <- "pCM_rods"
+motifs_to_plot <- all$motif[all$cluster == cluster]
+
+lapply(motifs_to_plot , MotifFeaturePlot)
+
+# motifs_names_to_plot <- all$motif_names[all$cluster == cluster] %>% intersect(footprints)
+# if(length(motifs_names_to_plot) > 0){
+# PlotFootprint(sObj, features = motifs_names_to_plot)}
+```
+
+## early RPCs 
+
+```{r}
+cluster <- "earlyRPCs"
+motifs_to_plot <- all$motif[all$cluster == cluster]
+
+lapply(motifs_to_plot , MotifFeaturePlot)
+
+# motifs_names_to_plot <- all$motif_names[all$cluster == cluster] %>% intersect(footprints)
+# if(length(motifs_names_to_plot) > 0){
+# PlotFootprint(sObj, features = motifs_names_to_plot)}
+```
+
+## late RPCs 
+
+```{r}
+cluster <- "lateRPCs"
+motifs_to_plot <- all$motif[all$cluster == cluster]
+
+lapply(motifs_to_plot , MotifFeaturePlot)
+
+# motifs_names_to_plot <- all$motif_names[all$cluster == cluster] %>% intersect(footprints)
+# if(length(motifs_names_to_plot) > 0){
+# PlotFootprint(sObj, features = motifs_names_to_plot)}
+```
+
+## T1
+
+```{r}
+cluster <- "T1"
+motifs_to_plot <- all$motif[all$cluster == cluster]
+
+lapply(motifs_to_plot , MotifFeaturePlot)
+
+# motifs_names_to_plot <- all$motif_names[all$cluster == cluster] %>% intersect(footprints)
+# if(length(motifs_names_to_plot) > 0){
+# PlotFootprint(sObj, features = motifs_names_to_plot)}
+```
+## T3  cones
+
+```{r}
+cluster <- "T3_cones"
+motifs_to_plot <- all$motif[all$cluster == cluster]
+
+lapply(motifs_to_plot , MotifFeaturePlot)
+
+# motifs_names_to_plot <- all$motif_names[all$cluster == cluster] %>% intersect(footprints)
+# if(length(motifs_names_to_plot) > 0){
+# PlotFootprint(sObj, features = motifs_names_to_plot)}
+```
+
+
+## T3 
+
+```{r}
+cluster <- "T3"
+motifs_to_plot <- all$motif[all$cluster == cluster]
+
+lapply(motifs_to_plot , MotifFeaturePlot)
+
+# motifs_names_to_plot <- all$motif_names[all$cluster == cluster] %>% intersect(footprints)
+# if(length(motifs_names_to_plot) > 0){
+# PlotFootprint(sObj, features = motifs_names_to_plot)}
+```

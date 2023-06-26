@@ -1,0 +1,725 @@
+---
+title: "AD3 ATACseq - Figures for paper"
+output:
+  html_document:
+    df_print: paged
+---
+
+
+```{r global_options, include=FALSE}
+knitr::opts_chunk$set(echo=FALSE, warning=FALSE, message=FALSE)
+
+
+```
+
+
+```{r, libraries}
+library(tidyverse)
+library(Signac)
+library(Seurat)
+library(JASPAR2020)
+library(GenomeInfoDb)
+library(EnsDb.Hsapiens.v86)
+library(TFBSTools)
+library(monocle3)
+library(SeuratWrappers)
+library(patchwork)
+library(ComplexHeatmap)
+library("MetBrewer")
+library(ggplot2)
+library(circlize)
+
+sObj_AD3 <- readRDS("rObjects/shared_sObj_merge_retina_with45_60.rds")
+
+## Remove space in MG
+sObj_AD3$CellType <- sObj_AD3$CellType %>% as.character()
+sObj_AD3$CellType[grepl("MG", sObj_AD3$CellType)] <- "MG"
+getwd()
+# cellorder <- c("early RPCs","late RPCs","T1","T2","T3","RGCs", "HCs", "glycinergic amacrine cells ", "Gabaergic amacrine cells", "starburst amacrine cells", "cones", "rods", "BPs", "microglia", "MG")
+```
+
+
+
+```{r}
+median_fragments <- sObj_AD3[[]] %>% dplyr::select(grep("fragments", colnames(.))) %>% as.matrix() %>%  colMedians() %>% data.frame(median_fragments_per_cell = .)
+rownames(median_fragments) <- colnames(sObj_AD3[[]])[grep("fragments", colnames(sObj_AD3[[]]))]
+
+write.csv(median_fragments, "csvFiles/median_fragments.csv")
+
+
+```
+
+
+
+
+```{r, lcell order}
+cellorder <- c("pCM", "early RPCs","late RPCs", "T1","T3", "RGCs", "HCs + ACs", "cones", "rods", "BPs",  "MG")
+sObj_AD3$CellType <- factor(sObj_AD3$CellType, levels = cellorder)
+```
+
+
+```{r, libraries}
+```
+
+### Slide 2
+
+After filtering and quality control,  37522 AD3 cells from day 10 to 210 were integrated. 
+
+```{r}
+sObj_AD3$day %>% data.frame(day = .) %>% group_by(day) %>% summarise(number_cells = n())
+```
+
+
+
+
+Individual bed files for each sample were combined and bedtools merge was used to create a shared peak bed file. Cellranger reanalyse was run to create a shared peak set with a total of 649357 chromatin accessibilty peaks. 
+A gene activity matrix was was greated from these peaks using Signac. 
+
+The cells were clustered using the chromatin accessibility peaks resulting in 17 clusters. 
+
+
+```{r}
+DimPlot(sObj_AD3, group.by = "peaks_snn_res.0.8")
+```
+
+
+These were classified into 15 cell types by linking DA peaks for each cluster to predicted gene activity. 
+
+```{r}
+plot_cols <- read.csv("../../HighResFigures/colours_birthe.csv", stringsAsFactors = FALSE,  sep = ",")
+
+CellTypes <- factor(sObj_AD3$CellType) %>% levels()
+clusterCols <- plot_cols$Colour[match(CellTypes, plot_cols$Annotation)]
+clusterCols[is.na(clusterCols)] <- "#619cff"
+DimPlot(sObj_AD3, group.by = "CellType", label = TRUE)
+
+
+p1  <- DimPlot(sObj_AD3, group.by = "CellType", label = TRUE) + scale_color_manual(values = clusterCols) + 
+  theme_classic() 
+
+ 
+  ggsave(filename = paste0("highRes/celltype_umap.tiff"), plot = p1,
+         width = 8,
+         height = 5,)
+
+getwd()
+
+
+```
+
+
+
+
+```{r, eval = FALSE}
+library(GenomicRanges)
+library(S4Vectors)
+DA_peaks <- readRDS("rObjects/shared_DA_peaks_celltype_RPC_combined.rds")
+
+peak_anno <- read.csv("shared_peaks/peak_annotation.tsv", sep = "\t")
+colnames(peak_anno) <- paste0("Cellranger_", colnames(peak_anno))
+peak_anno$DA_peak <- gsub("_", "-", peak_anno$Cellranger_peak)
+
+
+
+
+```
+
+
+
+### Slide 4A - Classifying peaks
+
+The peaks were classified using annotation from cellranger.
+
+The annotation procedure is as follows:
+
+1) If a peak overlaps with promoter region (-1000 bp, +100 bp) of any transcription start site (TSS), it is annotated as a promoter peak of the gene.
+
+2) peaks overlapping introns or exon regions were annotated using "exons" and 
+
+
+2) If a peak is within 200 kb of the closest TSS, and if it is not a promoter peak of the gene of the closest TSS, it will be annotated as a distal peak of that gene.
+
+
+3) If a peak overlaps the body of a transcript, and it is not a promoter nor a distal peak of the gene, it will be annotated as a distal peak of that gene with distance set as zero.
+
+
+4) If a peak has not been mapped to any gene at the step, it will be annotated as an intergenic peak without a gene symbol assigned.
+
+
+
+
+
+```{r, eval = FALSE}
+DA_peaks <- readRDS("rObjects/shared_DA_peaks_celltype.rds")
+
+## closest genes
+#closest_genes <- ClosestFeature(sObj_AD3 , row.names(DA_peaks)) %>% dplyr::rename(DA_peak = query_region)
+
+
+
+DA_peaks <- DA_peaks %>% tibble::rownames_to_column("DA_peak")  
+
+
+## cellranger annotation
+peak_anno <- read.csv("shared_peaks/peak_annotation.tsv", sep = "\t")
+colnames(peak_anno) <- paste0("Cellranger_", colnames(peak_anno))
+peak_anno$DA_peak <- gsub("_", "-", peak_anno$Cellranger_peak)
+
+
+
+## join peaks
+DA_peaks <- DA_peaks %>% left_join(peak_anno) %>%  distinct()
+DA_peaks$Cellranger_peak_type <- gsub(";.*", "", DA_peaks$Cellranger_peak_type)
+DA_peaks$Cellranger_distance <- gsub(";.*", "", DA_peaks$Cellranger_distance)
+
+gf <- StringToGRanges(regions = DA_peaks$DA_peak, sep = c("-", "-"))
+write.csv(DA_peaks, "csvFiles/shared_DA_peaks_celltype_cellranger_annotated.csv")
+
+# 
+# 
+# 
+# ### classify into exon and introns
+# ## create txdb from cellranger gtf
+path <- file.path("../../ATAC_analysis/genes.gtf")
+gr <- rtracklayer::import(path, format = "gtf")
+txdb <- makeTxDbFromGRanges(gr)
+# 
+# ## query for exon regions
+exons_regions <- exons(txdb, columns="exon_id", filter=NULL, use.names=FALSE)
+hits <- findOverlaps(query = gf,
+                     subject = exons_regions)
+
+exon.peaks <- queryHits(hits) %>% unique()
+DA_peaks$exon <- FALSE
+DA_peaks$exon[exon.peaks] <- TRUE
+
+## query for intron regions
+intron_regions <- intronsByTranscript(txdb, use.names=TRUE) %>% unlist()
+hits <- findOverlaps(query = gf,
+                     subject = intron_regions)
+
+intron.peaks <- queryHits(hits) %>% unique()
+
+## add to DA peaks
+DA_peaks$intron <- FALSE
+DA_peaks$intron[intron.peaks] <- TRUE
+DA_peaks$type_to_plot <- DA_peaks$Cellranger_peak_type
+DA_peaks$type_to_plot[DA_peaks$Cellranger_peak_type !="promoter" & DA_peaks$intron] <- "intron"
+DA_peaks$type_to_plot[DA_peaks$Cellranger_peak_type !="promoter" & DA_peaks$exon] <- "exon"
+
+saveRDS(DA_peaks, "rObjects/shared_DA_peaks_celltype_annoatated.rds")
+
+
+
+```
+
+
+### figure 4A - Peak barplot
+
+```{r}
+
+
+DA_peaks <- readRDS("rObjects/shared_DA_peaks_celltype_annoatated.rds")
+DA_peaks$cluster <- DA_peaks$cluster %>% as.character()
+
+
+DA_peaks$cluster[DA_peaks$cluster == "MG "] <- "MG"
+
+
+
+### using cellranger annotation
+type_peaks <- DA_peaks %>% group_by(cluster, type_to_plot) %>% summarise(number_peaks = n())
+type_peaks <-  type_peaks[!is.na(type_peaks$type_to_plot), ]
+type_peaks$cluster <- type_peaks$cluster %>% factor(levels = cellorder)
+colors <- c("#e6055b", "#073ded",   "#4287f5", "#601da3", "#08c252"  )
+p1 <- ggplot(type_peaks, aes(cluster, number_peaks, fill = type_to_plot)) + 
+  geom_bar(stat = "identity") + scale_fill_manual(values = colors) + 
+  theme_bw() + 
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1)) 
+ggsave(filename = "highRes/classification_peaks_cellranger.tiff", plot = p1)
+```
+
+## Slide 4B - Peak Heatmap
+
+```{r}
+### Cell type specific peaks
+peak_list <- list()
+
+for (ct in unique(sObj_AD3$CellType)){
+peak_mat <- sObj_AD3@assays$peaks@counts[,sObj_AD3$CellType == ct] 
+peak_list[[ct]] <- rownames(peak_mat)[rowSums(peak_mat) > 0]
+}
+
+total_peaks <- lapply(peak_list, length) %>% unlist()
+
+all_peaks <- peak_list %>% unlist() 
+dup_peaks <- all_peaks[duplicated(all_peaks)] %>% unique()
+
+
+
+celltype_peaks <- lapply(peak_list, function(x){setdiff(x, dup_peaks)})
+
+celltype_specific_peaks <- lapply(celltype_peaks, length) %>% unlist()
+
+### numbers DA peaks 
+
+DA_peaks_number <- DA_peaks %>% group_by(cluster) %>% summarise(number_da_peaks = n())
+
+
+
+### summary table
+number_peaks <- data.frame(total = total_peaks,
+           celltype_specific = celltype_specific_peaks, 
+           number_DA_peaks = DA_peaks_number$number_da_peaks)
+
+
+number_peaks
+```
+
+
+Only 419 peaks were unique to cell type so I sed the DA peaks for plotting. 
+
+```{r}
+#write.csv(number_peaks, "highRes/number_peaks.csv")
+
+```
+
+
+## Slide 4C Heatmap of Peaks
+
+
+```{r, fig.width=20, fig.height=10}
+counts_t <-sObj_AD3@assays$peaks@data %>% t() 
+
+## create average counts for each cell type
+avg_list <- list()
+for (ct in unique(sObj_AD3$CellType)){
+peak_mat <- sObj_AD3@assays$peaks[,sObj_AD3$CellType == ct] 
+avg_list[[ct]] <- rowMeans(peak_mat)
+}
+
+
+peak_averages <- do.call(rbind.data.frame, avg_list)
+colnames(peak_averages) <- names(avg_list[[1]])
+rownames(peak_averages) <- names(avg_list)
+
+
+DA_peak_averages <- peak_averages[,DA_peaks$gene]
+
+to_downsample <- round(number_peaks$number_DA_peaks / 10)
+names(to_downsample)<-rownames(number_peaks)
+
+
+
+
+set.seed(123)
+s <- c()
+for (ct in cellorder){
+s <- c(s, which(DA_peaks$cluster == ct)[1:to_downsample[ct]])
+}
+DA_peak_averages_small <- as.matrix(DA_peak_averages[,s])
+
+  
+  
+
+hm <-   Heatmap(DA_peak_averages_small[cellorder,], 
+        show_column_dend = FALSE, 
+        show_row_dend = FALSE, 
+        show_column_names = FALSE, cluster_columns = FALSE, 
+        cluster_rows = FALSE,
+        column_names_gp = grid::gpar(fontsize = 20),
+        row_names_gp = grid::gpar(fontsize = 20), 
+        heatmap_legend_param = list(direction = "horizontal", 
+                                    title = "", 
+                                    labels_gp = gpar(fontsize = 15))
+        )
+
+hm
+
+
+# tiff(filename = "highRes/DA_peaks_heatmap_RPC_merged.tiff", width = 2000, height = 1000)    
+# 
+# draw(hm, heatmap_legend_side = "bottom", 
+#     annotation_legend_side = "bottom", 
+#     padding = unit(c(2, 2, 2, 40), "mm"))
+# dev.off()
+
+```
+
+
+### plots for gene panel
+
+```{r}
+sObj_AD3$CellType <- sObj_AD3$CellType %>% as.character()
+#sObj_AD3$CellType[grepl("RPC", sObj_AD3$CellType)] <- "RPCs"
+
+sObj_AD3 <- SetIdent(sObj_AD3, value = "CellType")
+
+
+thinCoveragePeak_anno <- function(peak, gene){
+  p1 <- CoveragePlot(
+  object = sObj_AD3,
+  region = peak,
+  extend.upstream = 100,
+  extend.downstream = 200
+)
+
+
+  top <- p1$patches$plots[[1]]$patches$plots[[1]] + 
+  theme(strip.text = element_text(size=10),
+        title = element_blank(),
+        axis.ticks.y=element_blank(),
+        axis.line=element_blank(),
+        panel.grid = element_blank(),
+        panel.border = element_blank()
+        )  
+
+
+bottom <-  p1$patches$plots[[1]]$patches$plots[[2]] + 
+  theme(strip.text = element_text(size=0), 
+        title = element_blank(),  
+        axis.ticks.y=element_blank(),                                                 
+        axis.line=element_blank(), 
+        text = element_blank(),
+        panel.grid = element_blank(),
+        panel.border = element_blank()) 
+                                              
+bottom$layers[[4]] <- NULL                                      
+                                                       
+                                                        
+p2 <- top + bottom + plot_layout(ncol = 1, heights = c(8,1.5)) + plot_annotation(title = gene) 
+
+
+
+
+return(p2)
+}
+
+DA_peaks <-readRDS("rObjects/shared_DA_peaks_celltype_annoatated.rds")
+```
+
+
+```{r}
+
+genes_for_panel <- list()
+genes_for_panel[["cones"]] <- c("PDE6B")
+genes_for_panel[["rods"]] <-c("NR2E3")
+genes_for_panel[["BPs"]] <-c("VSX1")
+genes_for_panel[["MG"]] <-c("SLC1A3", "RLBP1")
+#genes_for_panel[["microglia"]] <-c("CD74")
+genes_for_panel[["RPCs"]] <-c("DAPL1") 
+genes_for_panel[["T1"]] <- "FAM131C"
+#genes_for_panel[["T2"]] <- c("PRDM13", "PTF1A")
+genes_for_panel[["T3"]] <- "NEUROD4"
+genes_for_panel[["HCs + ACs"]] <- c("ONECUT2", "GAD2", "SLC6A7", "CHAT") 
+genes_for_panel[["RGCs"]] <- c("RBPMS", "GAP43", "POU4F2")
+
+
+marker_genes <- genes_for_panel %>% unlist() %>% unname()
+setdiff(marker_genes, DA_peaks$Cellranger_gene) 
+
+
+#### not in DA list: 
+#microglia - "HLA-DQA1"
+#genes_for_panel[["starburst amacrine cells"]] <- "CHAT"
+
+## first plot in panel with labels
+# cellType <- "early RPCs"
+# gene <- "DAPL1"
+# peak <-  DA_peaks[DA_peaks$cluster == cellType & DA_peaks$Cellranger_gene %in% gene, "gene"][1]
+# p1_labeled <- thinCoveragePeak_anno(peak, gene)
+
+## other panels in plots
+cellType_Plots <-list()
+for (cellType in names(genes_for_panel)){
+  print(cellType)
+  genes <- genes_for_panel[[cellType]]
+  
+  plot_list <- list()
+  for (i in 1:length(genes)){
+    gene <- genes[i]
+    peak <-  DA_peaks[DA_peaks$Cellranger_gene %in% gene, "gene"][1]
+    fName <- paste0("highRes/peak_panels/", cellType, "_", gene, "_peak_panel.tiff")
+    p0 <- thinCoveragePeak_anno(peak, gene)
+    ggsave(filename = fName, plot = p0)
+    plot_list[[i]] <- p0
+    }
+  
+  cellType_Plots[[cellType]] <- plot_list
+}
+
+
+cellType <- "rods" 
+gene <- "RHO"
+peak <- "chr3-129528169-129529069"
+fName <- paste0("highRes/peak_panels_RPC_combined/", cellType, "_", gene, "_peak_panel.tiff")
+p0 <- thinCoveragePeak_anno(peak, gene)
+ggsave(filename = fName, plot = p0)
+  
+cellType <- "rods" 
+gene <- "PDE6B"
+peak <- "chr4-623835-630838"
+fName <- paste0("highRes/peak_panels_RPC_combined/", cellType, "_", gene, "_peak_panel.tiff")
+p0 <- thinCoveragePeak_anno(peak, gene)
+ggsave(filename = fName, plot = p0)
+
+cellType <- "rods" 
+gene <- "ROM1"
+peak <- "chr11-62610758-62614789"
+fName <- paste0("highRes/peak_panels_RPC_combined/", cellType, "_", gene, "_peak_panel.tiff")
+p0 <- thinCoveragePeak_anno(peak, gene)
+ggsave(filename = fName, plot = p0)
+
+  
+# cellType <- "pCM" 
+# gene <- "ZIC1"
+# peak <- "chr11-62610758-62614789"
+# fName <- paste0("highRes/peak_panels_RPC_combined/", cellType, "_", gene, "_peak_panel.tiff")
+# p0 <- thinCoveragePeak_anno(peak, gene)
+# ggsave(filename = fName, plot = p0)
+
+cellType <- "pCM" 
+gene <- "OTX1"
+peak <- "chr2-63046976-63060140"
+fName <- paste0("highRes/peak_panels_RPC_combined/", cellType, "_", gene, "_peak_panel.tiff")
+p0 <- thinCoveragePeak_anno(peak, gene)
+ggsave(filename = fName, plot = p0)
+
+cellType <- "pCM" 
+gene <- "WNT2B"
+peak <- "chr1-112515279-112516408"
+fName <- paste0("highRes/peak_panels_RPC_combined/", cellType, "_", gene, "_peak_panel.tiff")
+p0 <- thinCoveragePeak_anno(peak, gene)
+ggsave(filename = fName, plot = p0)
+
+cellType <- "T1" 
+gene <- "MFNG"
+peak <- "chr22-37481039-37487971"
+fName <- paste0("highRes/peak_panels_RPC_combined/", cellType, "_", gene, "_peak_panel.tiff")
+p0 <- thinCoveragePeak_anno(peak, gene)
+ggsave(filename = fName, plot = p0)
+
+getwd()
+
+genes <- c( "OTX2", "ARR3", "ONECUT1", "WNT2B")
+sel_DA_peaks <- DA_peaks %>% dplyr::filter(Cellranger_gene %in% genes) %>% group_by(Cellranger_gene) %>% top_n(1, avg_log2FC) %>%  data.frame()
+
+
+
+for (i in 1:nrow(sel_DA_peaks)){
+cellType <- sel_DA_peaks[i, "cluster"] %>% as.character()
+gene <- sel_DA_peaks[i, "Cellranger_gene"] 
+peak <- sel_DA_peaks[i, "DA_peak"] 
+fName <- paste0("highRes/peak_panels_RPC_combined/", cellType, "_", gene, "_peak_panel.tiff")
+p0 <- thinCoveragePeak_anno(peak, gene)
+ggsave(filename = fName, plot = p0)}
+
+sel_DA_peaks <- DA_peaks %>% dplyr::filter(cluster == "rods") %>% dplyr::filter(Cellranger_gene %in% "RHO") %>% group_by(Cellranger_gene) %>% top_n(1, avg_log2FC) %>%  data.frame()
+cellType <- sel_DA_peaks[1, "cluster"] %>% as.character()
+gene <- sel_DA_peaks[1, "Cellranger_gene"] 
+peak <- sel_DA_peaks[1, "DA_peak"] 
+fName <- paste0("highRes/peak_panels_RPC_combined/", cellType, "_", gene, "_peak_panel.tiff")
+p0 <- thinCoveragePeak_anno(peak, gene)
+ggsave(filename = fName, plot = p0)
+
+
+
+```
+
+
+##Addititional peaks
+
+```{r}
+genes <- c( "ONECUT1", "ONECUT2", "ONECUT3","GAD1", "GAD2","CUX1", "CUX2", "PROX1",  "TFAP2A", "TFAP2B", "TFAP2C", "ATOH7",
+"OTX2",
+"HES6",
+"CRX",
+"RXRG",
+"ARR3",
+"THRB",
+"NRL",
+"ZIC1",
+"VSX2")
+
+genes_hc_ac <- c("ONECUT1", "ONECUT2", "ONECUT3","GAD1", "GAD2")
+
+
+sel_DA_peaks_hc_ac <- DA_peaks %>% dplyr::filter(Cellranger_gene %in% genes_hc_ac & cluster == "HCs + ACs") %>% group_by(Cellranger_gene) %>% top_n(1, avg_log2FC)
+
+sel_DA_peaks <- DA_peaks %>% dplyr::filter(Cellranger_gene %in% c(genes, genes_hc_ac)) %>% group_by(Cellranger_gene) %>% top_n(1, avg_log2FC) %>% rbind(sel_DA_peaks_hc_ac) %>% data.frame()
+
+
+
+for (i in 1:nrow(sel_DA_peaks)){
+cellType <- sel_DA_peaks[i, "cluster"] %>% as.character()
+gene <- sel_DA_peaks[i, "Cellranger_gene"] 
+peak <- sel_DA_peaks[i, "DA_peak"] 
+fName <- paste0("highRes/peak_panels_RPC_combined/", cellType, "_", gene, "_peak_panel.tiff")
+p0 <- thinCoveragePeak_anno(peak, gene)
+ggsave(filename = fName, plot = p0)}
+
+cols_write <- c("DA_peak", "cluster", "p_val", "p_val_adj", "avg_log2FC", "pct.1", "pct.2", "Cellranger_gene", "Cellranger_distance", "Cellranger_peak_type")
+
+
+
+write.csv(sel_DA_peaks[,cols_write], "csvFiles/additional_DA_peak_plots.csv")
+
+```
+
+
+
+
+## Slide motif heatmap - using chromvar motifs
+```{r}
+## Remove space in MG
+sObj$CellType <- sObj$CellType %>% as.character()
+sObj$CellType[grepl("MG", sObj$CellType)] <- "MG"
+sObj$CellType[grepl("RPCs", sObj$CellType)] <- "RPCs"
+sObj <- SetIdent(sObj, value = "CellType")
+DefaultAssay(sObj) <- "chromvar"
+
+cellorder <- c("pCM", "RPCs", "T1","T3", "RGCs", "HCs + ACs", "cones", "rods", "BPs",  "MG")
+
+# motif_df <- readRDS("../../../Retina/ATAC_analysis/rObjects/motif_df.rds")
+# ## from chromvar_enriched_motifs
+# chromvar_enriched_motifs <- read.csv("csvFiles/chromvar_enriched_motifs.csv", row.names = 1) %>% dplyr::rename(motif =gene) %>% left_join(motif_df)
+# 
+# write.csv(chromvar_enriched_motifs,
+#           "csvFiles/chromvar_enriched_motifs.csv")
+
+
+chromvar_enriched_motifs <- read.csv("csvFiles/chromvar_enriched_motifs.csv", row.names = 1)
+
+chromvar_enriched_motifs$cluster <- factor(chromvar_enriched_motifs$cluster, 
+                                           levels = cellorder)
+
+chromvar_enriched_motifs %>% arrange(cluster)
+
+
+top5 <- chromvar_enriched_motifs %>% group_by(cluster) %>% 
+  top_n(n = 8, wt= avg_diff) %>% 
+  arrange(cluster) %>%
+  ungroup() %>%
+  distinct(motif, name)
+
+saveRDS(top5, "rObjects/top5_motifs.rds")
+
+sObj <- SetIdent(sObj, value = "CellType")
+sObj <- ScaleData(sObj, features = top5$motif)
+
+
+summarised_data <- AverageExpression(
+  sObj,
+  assays = "chromvar",
+  features = top5$motif,
+  return.seurat = FALSE,
+  group.by = "ident",
+  add.ident = NULL,
+  slot = "scale.data",
+  verbose = TRUE
+)
+summarised_data <- summarised_data$chromvar %>% t() %>% data.frame() 
+summarised_data <- summarised_data[cellorder, top5$motif]
+colnames(summarised_data) <- top5$name
+col_fun = colorRamp2(c(0,2), c("white", "cornflowerblue"))
+
+hm <- Heatmap(summarised_data, 
+        show_column_dend = FALSE, 
+        show_row_dend = FALSE, 
+        show_column_names = TRUE, 
+        cluster_columns = FALSE, 
+        cluster_rows = FALSE, 
+        col = col_fun, 
+        column_names_gp = grid::gpar(fontsize = 20),
+        row_names_gp = grid::gpar(fontsize = 20), 
+        heatmap_legend_param = list(direction = "horizontal", 
+                                    title = "", 
+                                    labels_gp = gpar(fontsize = 15)))
+
+tiff(filename = "highRes/top_motif_heatmap_chromvar_method.tiff", width = 2000, height = 1000)
+draw(hm,  heatmap_legend_side = "bottom", 
+    annotation_legend_side = "bottom", padding = unit(c(2, 2, 2, 40), "mm"))
+dev.off()
+
+
+library(wesanderson)
+library(ragg)
+pal <- wes_palette("Zissou1", 100, type = "continuous")
+
+
+plot_motif <- function(motif_name){
+motif_plot <- motif_df$motif[motif_df$name == motif_name]
+p1 <- FeaturePlot(sObj, motif_plot, min.cutoff = -1, max.cutoff = 7.5, order = TRUE ) +  scale_colour_gradientn(colours = pal) + ggtitle(paste(motif_name, motif_plot)) 
+ggsave(plot = p1, filename = paste0("highRes/chromvar_motifs/", motif_name, ".tiff"))
+return(p1)
+}
+
+
+for( motif_name in top5$name){
+  plot_motif(motif_name)
+}
+
+```
+
+
+To do - Slide 6B - Footprint plots
+```{r}
+
+top5 <- readRDS("rObjects/top5_motifs.rds")
+sObj_AD3 <- readRDS("rObjects/sObj_with_motifs_fp.rds")
+
+footprints <- GetAssayData(object = sObj_AD3, assay = "peaks", 
+slot = "positionEnrichment") %>% names()
+
+
+for (fp in top5$name){
+  p1 <- PlotFootprint(sObj_AD3, features = fp, group.by = "CellType")
+  
+  fName <- paste0("highRes/footprint_plots/", fp, "_merged_RPC_foot_print.tiff")
+  
+  ggsave(fName, p1, width = 10, height = 7)
+  
+  print(p1)
+}
+
+getwd()
+
+```
+
+
+
+
+## Footprints change scale for NFIC(var.2) and NFIB
+```{r}
+source("plot_footprints.R")
+
+toReplot <- c("NFIC(var.2)", "NFIB")
+for (fp in toReplot){
+  p1 <- PlotFootprint_custom(sObj_AD3, 
+                             features = fp, 
+                             group.by = "CellType", 
+                     axis.max = 2,
+                     axis.min  = -1.5)
+  
+  fName <- paste0("highRes/footprint_plots/", fp, "_merged_RPC_foot_print.tiff")
+  
+  ggsave(fName, p1, width = 10, height = 7)
+  
+  print(p1)
+}
+
+
+
+```
+
+### Slide 6B - Motif plots
+```{r}
+DefaultAssay(sObj) <- "peaks"
+for (motif_name in top5$name){
+  motif <- top5$motif[top5$name == motif_name]
+  p2 <- MotifPlot(sObj, motif)
+  fName <- paste0("highRes/motifs/", motif_name, "_motif.tiff")
+  ggsave(fName, p2, bg = "white")
+}
+
+```

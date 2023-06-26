@@ -1,0 +1,204 @@
+---
+title: "AD3 ATACseq - shared peaks"
+output:
+  html_document:
+    df_print: paged
+---
+
+
+```{r global_options, include=FALSE}
+knitr::opts_chunk$set(echo=FALSE, warning=FALSE, message=FALSE)
+
+```
+
+
+```{r, libraries}
+
+library(tidyverse)
+library(Signac)
+library(Seurat)
+library(GenomeInfoDb)
+library(EnsDb.Hsapiens.v86)
+library(ggplot2)
+library(dplyr)
+library(patchwork)
+library(rtracklayer)
+library(cowplot)
+library(JASPAR2020)
+library(TFBSTools)
+
+set.seed(1234)
+
+
+
+
+```
+
+
+```{r}
+#after processing
+#sObj_List <- readRDS("rObjects/shared_sObj_List.rds")
+sObj_Filtered <- readRDS("rObjects/shared_sObj_merge_retina_with45_60.rds")
+sampleInfo <- readRDS("rObjects/sampleInfo_usedIntegration.rds")
+DA_peaks_path <- "rObjects/shared_DA_peaks_retina_with45_60.rds"
+```
+
+# {.tabset .tabset-pills}
+
+A shared peak set was created using peaks identified in indivdual analysis of samples
+
+
+## Select Retinal Cells
+
+Cells identifed as retinal cell types in the individual analysis were selected 
+for inclusion in downstream analysis.
+
+The individual datasets were then merged. The data was normalised. The 2000 highly variable genes identifedin scRNAseq data set were used to select peaks for dimension reduction steps. The data was then clustered and 17 clusters identified. 
+
+```{r}
+DimPlot(sObj_Filtered, group.by = "CellType", label = TRUE) +  NoLegend() + ggtitle("Individual annotations")
+
+DimPlot(sObj_Filtered,  label = TRUE) + ggtitle("New clusters")
+```
+
+
+
+
+
+
+## Retina Markers
+
+```{r, results="asis"}
+retina_markers <- readRDS("../../markers/Retina_Markers.rds")
+DefaultAssay(sObj_Filtered) <- "RNA"
+
+for (celltype in names(retina_markers)){
+  # cell type section title
+  cat("  \n###",  celltype, "{.tabset}  \n")
+  
+  # marker genes
+  markers <- retina_markers[[celltype]] %>% 
+    intersect(rownames(sObj_Filtered))
+  
+  for (marker in markers){
+      # gene name section title
+      cat("  \n####",  marker, "  \n")
+      
+      # section content
+      sectionContent <- paste(celltype, marker)
+      
+      p1 <- FeaturePlot(sObj_Filtered, features = marker, 
+                  order = TRUE,
+                  min.cutoff = "q1",
+                    cols = c("#E5E5E5", "#FF0000"), 
+                  label = TRUE, 
+                  label.size = 2)
+      
+      
+      
+      # Feature Plot
+      cat("  \n")
+      print(p1)
+      cat("  \n")
+      
+    
+  }
+}
+
+
+
+```
+
+
+
+
+```{r, results="asis", eval  =FALSE}
+## DA peaks
+DefaultAssay(sObj_Filtered) <- "peaks"
+DA_Peaks <- readRDS(DA_peaks_path) %>% dplyr::rename(query_region = gene)
+cf <- ClosestFeature(sObj_Filtered, DA_Peaks$query_region )
+
+DA_Peaks <- DA_Peaks %>% left_join(cf) %>% distinct(.keep_all = TRUE)
+
+DA_Peaks_sig <- DA_Peaks %>% dplyr::filter(p_val < 0.005 & avg_log2FC > 0.3) %>% arrange(cluster, avg_log2FC)
+
+DA_Peaks_sig_list <- split( DA_Peaks_sig , f = DA_Peaks_sig$cluster )
+#library(openxlsx)
+#write.xlsx(DA_Peaks_sig_list, "csvFiles/shared_DA_peaks_with45_60.xls")
+```
+
+
+
+## Retinal Markers - using motifs
+```{r}
+pfm <- getMatrixSet(
+  x = JASPAR2020,
+  opts = list(collection = "CORE", tax_group = 'vertebrates', all_versions = FALSE)
+)
+
+motifs <- sapply(pfm, function(x){x@name})
+motif_df <- data.frame(motif = names(motifs),
+           name = unname(motifs)
+           )
+
+
+retina_markers <- readRDS("../../markers/Retina_Markers.rds")
+
+```
+
+```{r, results="asis"}
+
+DefaultAssay(sObj_Filtered) <- "chromvar"
+#all_markers <- retina_markers %>% unlist() %>% unname() %>% intersect(rownames(sObj))
+#sObj <- ScaleData(sObj, features = all_markers)
+
+p0 <- DimPlot(sObj_Filtered, label = TRUE, repel = TRUE, label.size = 8)
+
+for (celltype in names(retina_markers)){
+ 
+  markers <- retina_markers[[celltype]]
+  
+  # marker genes
+  motifs <- motif_df$motif[match(markers, motif_df$name)]
+  names(motifs) <- markers
+  
+  motifs <- motifs[!is.na(motifs)]
+  
+  
+  if (length(unname(motifs)) !=0){
+  motifs <- motifs[motifs %in% rownames(sObj_Filtered)]
+  }
+  
+  
+  
+  if (length(unname(motifs)) !=0){
+    # cell type section title
+    cat("  \n###",  celltype, "{.tabset}  \n")
+  
+    for (i in 1:length(motifs)){
+      marker <- names(motifs)[i]
+      motif <- unname(motifs)[i]
+        # gene name section title
+        cat("  \n####",  marker, "  \n")
+        
+        
+        p1 <- FeaturePlot(sObj_Filtered, features = motif, 
+                    order = TRUE,
+                    min.cutoff = "q50", 
+                    max.cutoff = "q95", 
+                    cols = c("#E5E5E5", "#FF0000"), 
+                    label = TRUE, 
+                    label.size = 2) + ggtitle(paste(marker, motif, sep = " - "))
+        
+        
+        
+        # Feature Plot
+        cat("  \n")
+        print(p1)
+        cat("  \n")
+      }
+  }
+}
+```
+
+
